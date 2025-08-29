@@ -20,8 +20,19 @@ GROQ_MODEL = "llama-3.1-8b-instant"
 DOCS_BASE_URL = os.getenv("DOCS_BASE_URL", "").rstrip("/")
 DOCS_LOCAL_ROOT = os.getenv(
     "DOCS_LOCAL_ROOT",
-    r"E:\PROGRAM_SOLUTION\Python\PycharmProjects\chatbot_FAQ\data"
+    r"E:\PROGRAM_SOLUTION\Python\PycharmProjects\medibot\docs"
 )
+
+# --- Manual URL overrides (no FAISS rebuild needed) ---
+# Keys must match the basename shown in your references (filename with or without .pdf).
+MANUAL_URLS = {
+
+    "BMA A-Z Family Medical Ency_ (Z-Library).pdf":
+        "https://archive.org/details/a-z-family-medical-encyclopedia_202101/page/287/mode/2up",
+
+    "The_GALE_ENCYCLOPEDIA_of_MEDICINE_SECOND.pdf":
+        "https://huggingface.co/spaces/teganmosi/medicalchatbot/blob/c4529cf3ebbf73301e20263bb414c23b23148c92/Data/The_GALE_ENCYCLOPEDIA_of_MEDICINE_SECOND.pdf",
+}
 
 # ================= PAGE + THEME-SAFE STYLES =================
 st.set_page_config(page_title="Medibot", page_icon="💬", layout="wide")
@@ -36,11 +47,9 @@ st.markdown("""
   --text: #0f172a;
   --muted: #64748b;
   --border: #e2e8f0;
-  --accent: #2563eb;  /* user tone */
-  --good: #16a34a;    /* assistant tone */
-
-  /* Layout knobs */
-  --page-width: 980px;  /* page container width */
+  --accent: #2563eb;
+  --good: #16a34a;
+  --page-width: 980px;
 }
 @media (prefers-color-scheme: dark){
   :root{
@@ -54,12 +63,8 @@ st.markdown("""
     --good: #22c55e;
   }
 }
-
-/* Layout */
 html, body, .main { background: var(--bg) !important; }
 .main .block-container { max-width: var(--page-width); padding-top: 16px; padding-bottom: 16px; }
-
-/* Header */
 .header{
   display:flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px;
@@ -67,8 +72,6 @@ html, body, .main { background: var(--bg) !important; }
 }
 .h-left{ display:flex; align-items:center; gap:10px; }
 .h-title{ font-weight: 700; font-size: 18px; color: var(--text); }
-
-/* Badges */
 .badges{ display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
 .badge{
   display:inline-flex; align-items:center; gap:.4rem;
@@ -76,14 +79,8 @@ html, body, .main { background: var(--bg) !important; }
   background: var(--surface-raised); border: 1px solid var(--border);
   font-size: 12.5px; color: var(--text);
 }
-
-/* Chat card wrapper */
 .card{ border:1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface); }
-
-/* Message stream */
 .stream{ display:flex; flex-direction:column; gap:10px; }
-
-/* Bubbles: clearly different and left/right aligned */
 .bubble{
   max-width: 82%;
   border: 1px solid var(--border);
@@ -99,29 +96,21 @@ html, body, .main { background: var(--bg) !important; }
   background: var(--surface-raised);
   margin-bottom: 6px;
 }
-
-/* USER: right side, blue tint */
 .user{
-  margin-left: auto;                /* right align */
+  margin-left: auto;
   background: color-mix(in oklab, var(--accent) 12%, var(--surface));
   border-left: 3px solid var(--accent);
 }
-
-/* ASSISTANT: left side, neutral/green hint */
 .assistant{
-  margin-right: auto;               /* left align */
+  margin-right: auto;
   background: color-mix(in oklab, var(--good) 8%, var(--surface));
   border-left: 3px solid var(--good);
 }
-
-/* References block: single line "Page numbers: 1, 2, 3" */
 .ref-line{
   color: var(--muted);
   font-size: 13px;
   margin-top: 6px;
 }
-
-/* Typing indicator dots */
 .typing { display:inline-flex; align-items:center; gap:6px; }
 .dot{
   width:6px; height:6px; border-radius:999px; background: var(--muted);
@@ -133,36 +122,26 @@ html, body, .main { background: var(--bg) !important; }
   0%, 80%, 100% { transform: scale(0.6); opacity: .4; }
   40% { transform: scale(1); opacity: 1; }
 }
-
-/* Chat input: exactly page width, centered, and uniform color */
 [data-testid="stChatInput"]{
   max-width: var(--page-width) !important;
   width: 100% !important;
   margin: 0 auto !important;
 }
 [data-testid="stChatInput"] > div{
-  background: var(--surface) !important;    /* uniform color */
+  background: var(--surface) !important;
   border: 1px solid var(--border) !important;
   border-radius: 12px !important;
 }
-
-/* Make inside of the input transparent so only the bar background shows */
 [data-testid="stChatInput"] textarea,
 [data-testid="stChatInput"] div[contenteditable="true"],
 [data-testid="stChatInput"] * {
   background: transparent !important;
   color: var(--text) !important;
 }
-
-/* Placeholder tint */
 [data-testid="stChatInput"] textarea::placeholder{
   color: var(--muted) !important;
 }
-
-/* Hide Streamlit default chat chrome */
 [data-testid="stChatMessage"]{ border:none !important; background:transparent !important; padding:0 !important; }
-
-/* General button look */
 div[data-testid="stButton"] > button {
   box-shadow: none !important;
   border: 1px solid var(--border) !important;
@@ -250,12 +229,24 @@ def thread_target(httpd):
 def get_docs_base_url():
     return DOCS_BASE_URL or ensure_local_docs_server(DOCS_LOCAL_ROOT)
 
+# ---- UPDATED: prefer manual overrides, else fall back to base/local ----
 def to_clickable_url(src_path: str) -> str:
     if not src_path:
         return ""
+    base_name = Path(src_path).name
+
+    # 1) Exact override by basename
+    if base_name in MANUAL_URLS:
+        return MANUAL_URLS[base_name]
+
+    # 2) Also try matching by stem (basename without extension)
+    stem = Path(base_name).stem
+    if stem in MANUAL_URLS:
+        return MANUAL_URLS[stem]
+
+    # 3) Fallback to your existing behavior
     base_url = get_docs_base_url()
-    fname = Path(src_path).name
-    return f"{base_url}/{quote(fname)}"
+    return f"{base_url}/{quote(base_name)}"
 
 def render_references(pages_by_source: dict):
     if not pages_by_source:
