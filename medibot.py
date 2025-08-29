@@ -1,7 +1,9 @@
 import os
-import threading
+import re
+import unicodedata
+import html
 from pathlib import Path
-from urllib.parse import quote
+
 import streamlit as st
 from dotenv import load_dotenv, find_dotenv
 
@@ -17,139 +19,44 @@ DB_FAISS_PATH = "vectorstore/db_faiss"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GROQ_MODEL = "llama-3.1-8b-instant"
 
-DOCS_BASE_URL = os.getenv("DOCS_BASE_URL", "").rstrip("/")
-DOCS_LOCAL_ROOT = os.getenv(
-    "DOCS_LOCAL_ROOT",
-    r"E:\PROGRAM_SOLUTION\Python\PycharmProjects\medibot\docs"
-)
-
-# --- Manual URL overrides (no FAISS rebuild needed) ---
-# Keys must match the basename shown in your references (filename with or without .pdf).
+# --- External URL overrides ONLY (no local server needed) ---
 MANUAL_URLS = {
-
     "BMA A-Z Family Medical Ency_ (Z-Library).pdf":
         "https://archive.org/details/a-z-family-medical-encyclopedia_202101/page/287/mode/2up",
-
     "The_GALE_ENCYCLOPEDIA_of_MEDICINE_SECOND.pdf":
         "https://huggingface.co/spaces/teganmosi/medicalchatbot/blob/c4529cf3ebbf73301e20263bb414c23b23148c92/Data/The_GALE_ENCYCLOPEDIA_of_MEDICINE_SECOND.pdf",
 }
 
-# ================= PAGE + THEME-SAFE STYLES =================
+# ================= PAGE + THEME =================
 st.set_page_config(page_title="Medibot", page_icon="💬", layout="wide")
 st.title("Medibot")
 
+# ================= STYLE =================
 st.markdown("""
 <style>
 :root{
-  --bg: #ffffff;
-  --surface: #ffffff;
-  --surface-raised: #f8fafc;
-  --text: #0f172a;
-  --muted: #64748b;
-  --border: #e2e8f0;
-  --accent: #2563eb;
-  --good: #16a34a;
-  --page-width: 980px;
+  --bg: #ffffff; --surface: #ffffff; --surface-raised: #f8fafc;
+  --text: #0f172a; --muted: #64748b; --border: #e2e8f0;
+  --accent: #2563eb; --good: #16a34a; --page-width: 980px;
 }
 @media (prefers-color-scheme: dark){
   :root{
-    --bg: #0b0f14;
-    --surface: #0f1520;
-    --surface-raised: #111827;
-    --text: #e5e7eb;
-    --muted: #94a3b8;
-    --border: #1f2937;
-    --accent: #60a5fa;
-    --good: #22c55e;
+    --bg: #0b0f14; --surface: #0f1520; --surface-raised: #111827;
+    --text: #e5e7eb; --muted: #94a3b8; --border: #1f2937;
+    --accent: #60a5fa; --good: #22c55e;
   }
 }
 html, body, .main { background: var(--bg) !important; }
 .main .block-container { max-width: var(--page-width); padding-top: 16px; padding-bottom: 16px; }
-.header{
-  display:flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px;
-  background: var(--surface);
-}
-.h-left{ display:flex; align-items:center; gap:10px; }
+.header{ display:flex; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface);}
 .h-title{ font-weight: 700; font-size: 18px; color: var(--text); }
-.badges{ display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
-.badge{
-  display:inline-flex; align-items:center; gap:.4rem;
-  padding:5px 9px; border-radius: 999px;
-  background: var(--surface-raised); border: 1px solid var(--border);
-  font-size: 12.5px; color: var(--text);
-}
-.card{ border:1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface); }
-.stream{ display:flex; flex-direction:column; gap:10px; }
-.bubble{
-  max-width: 82%;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 12px 14px;
-  line-height: 1.6;
-}
-.bubble .chip{
-  display:inline-flex; align-items:center; gap:6px;
-  font-weight:600; font-size:12px;
-  padding:2px 8px; border-radius:999px;
-  border:1px solid var(--border);
-  background: var(--surface-raised);
-  margin-bottom: 6px;
-}
-.user{
-  margin-left: auto;
-  background: color-mix(in oklab, var(--accent) 12%, var(--surface));
-  border-left: 3px solid var(--accent);
-}
-.assistant{
-  margin-right: auto;
-  background: color-mix(in oklab, var(--good) 8%, var(--surface));
-  border-left: 3px solid var(--good);
-}
-.ref-line{
-  color: var(--muted);
-  font-size: 13px;
-  margin-top: 6px;
-}
-.typing { display:inline-flex; align-items:center; gap:6px; }
-.dot{
-  width:6px; height:6px; border-radius:999px; background: var(--muted);
-  animation: pulse 1s infinite ease-in-out;
-}
-.dot:nth-child(2){ animation-delay: .15s; }
-.dot:nth-child(3){ animation-delay: .30s; }
-@keyframes pulse{
-  0%, 80%, 100% { transform: scale(0.6); opacity: .4; }
-  40% { transform: scale(1); opacity: 1; }
-}
-[data-testid="stChatInput"]{
-  max-width: var(--page-width) !important;
-  width: 100% !important;
-  margin: 0 auto !important;
-}
-[data-testid="stChatInput"] > div{
-  background: var(--surface) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 12px !important;
-}
-[data-testid="stChatInput"] textarea,
-[data-testid="stChatInput"] div[contenteditable="true"],
-[data-testid="stChatInput"] * {
-  background: transparent !important;
-  color: var(--text) !important;
-}
-[data-testid="stChatInput"] textarea::placeholder{
-  color: var(--muted) !important;
-}
-[data-testid="stChatMessage"]{ border:none !important; background:transparent !important; padding:0 !important; }
-div[data-testid="stButton"] > button {
-  box-shadow: none !important;
-  border: 1px solid var(--border) !important;
-  background: var(--surface) !important;
-  border-radius: 10px !important;
-  padding: 8px 12px !important;
-  font-size: 14px !important;
-}
+.badge{ padding:5px 9px; border-radius: 999px; background: var(--surface-raised); border: 1px solid var(--border); font-size: 12.5px; color: var(--text);}
+.card{ border:1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface);}
+.stream{ display:flex; flex-direction:column; gap:10px;}
+.bubble{ max-width: 82%; border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; line-height: 1.6;}
+.user{ margin-left: auto; background: color-mix(in oklab, var(--accent) 12%, var(--surface)); border-left: 3px solid var(--accent);}
+.assistant{ margin-right: auto; background: color-mix(in oklab, var(--good) 8%, var(--surface)); border-left: 3px solid var(--good);}
+.ref-line{ color: var(--muted); font-size: 13px; margin-top: 6px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -195,81 +102,62 @@ def extract_pages_only(docs):
         src = meta.get("source")
         if src:
             by_source.setdefault(src, set()).add(label)
+
     def sort_key(x):
         try: return int("".join(ch for ch in str(x) if ch.isdigit()))
         except: return 10**9
+
     return {k: sorted(v, key=sort_key) for k, v in by_source.items()}
 
-# ---------- Local static server for PDFs ----------
-def ensure_local_docs_server(root_dir: str) -> str:
-    if DOCS_BASE_URL:
-        return DOCS_BASE_URL
-    if "docs_server" in st.session_state:
-        return st.session_state["docs_server"]["base_url"]
+# -------- URL ONLY (normalize names to match) ----------
+def _normalize_name(s: str) -> str:
+    if not s: return ""
+    s = unicodedata.normalize("NFKC", s)
+    s = Path(s.replace("\\", "/")).name
+    s = s.lower()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"[_\s]+", " ", s).strip()
+    return s
 
-    import socketserver, http.server, socket, functools
-    root = Path(root_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    Handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+# Build lookup
+_NORMALIZED_URLS = {}
+for k, v in MANUAL_URLS.items():
+    nk = _normalize_name(k)
+    _NORMALIZED_URLS[nk] = v
+    _NORMALIZED_URLS[_normalize_name(Path(k).stem)] = v
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        _, port = s.getsockname()
-
-    httpd = socketserver.TCPServer(("127.0.0.1", port), Handler)
-    threading.Thread(target=thread_target, args=(httpd,), daemon=True).start()
-
-    base_url = f"http://127.0.0.1:{port}"
-    st.session_state["docs_server"] = {"httpd": httpd, "base_url": base_url, "root": str(root)}
-    return base_url
-
-def thread_target(httpd):
-    httpd.serve_forever()
-
-def get_docs_base_url():
-    return DOCS_BASE_URL or ensure_local_docs_server(DOCS_LOCAL_ROOT)
-
-# ---- UPDATED: prefer manual overrides, else fall back to base/local ----
 def to_clickable_url(src_path: str) -> str:
-    if not src_path:
-        return ""
-    base_name = Path(src_path).name
-
-    # 1) Exact override by basename
-    if base_name in MANUAL_URLS:
-        return MANUAL_URLS[base_name]
-
-    # 2) Also try matching by stem (basename without extension)
-    stem = Path(base_name).stem
-    if stem in MANUAL_URLS:
-        return MANUAL_URLS[stem]
-
-    # 3) Fallback to your existing behavior
-    base_url = get_docs_base_url()
-    return f"{base_url}/{quote(base_name)}"
+    if not src_path: return ""
+    base = Path(src_path).name
+    n_full = _normalize_name(base)
+    n_stem = _normalize_name(Path(base).stem)
+    return _NORMALIZED_URLS.get(n_full) or _NORMALIZED_URLS.get(n_stem) or ""
 
 def render_references(pages_by_source: dict):
-    if not pages_by_source:
-        return
-    # Single line per source: "<file> — Page numbers: 2, 7, 12"
+    if not pages_by_source: return
     for src, pgs in pages_by_source.items():
         base = Path(src).name if src else "unknown"
         url = to_clickable_url(src) if src else ""
-        title = f"[**{base}**]({url})" if url.startswith("http") else f"**{base}**"
         numbers = ", ".join(pgs)
-        st.markdown(
-            f"{title}  \n<span class='ref-line'>Page numbers: {numbers}</span>",
-            unsafe_allow_html=True
-        )
+
+        if url:
+            st.markdown(
+                f"[**{base}**]({url})  \n<span class='ref-line'>Page numbers: {numbers}</span>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f"<strong>{html.escape(base)}</strong><br>"
+                f"<span class='ref-line'>Page numbers: {html.escape(numbers)}</span>",
+                unsafe_allow_html=True
+            )
 
 # ================== HEADER ==================
 vs_ready = os.path.exists(DB_FAISS_PATH)
 st.markdown(
     f"""
 <div class="header">
-  <div class="h-left">
-    <div class="h-title">Minimal RAG over indexed docs</div>
-  </div>
+  <div class="h-title">Minimal RAG over indexed docs</div>
   <div class="badges">
     <span class="badge">🤖 {GROQ_MODEL}</span>
     <span class="badge">🗂️ FAISS • {EMBED_MODEL}</span>
@@ -285,64 +173,30 @@ if "history" not in st.session_state:
     st.session_state.history = []
 
 has_history = len(st.session_state.history) > 0
-
-if has_history:
-    st.markdown("<div class='card stream'>", unsafe_allow_html=True)
+if has_history: st.markdown("<div class='card stream'>", unsafe_allow_html=True)
 
 for turn in st.session_state.history:
-    st.markdown(
-        f"""
-<div class='bubble user'>
-  <div class='chip'>🧑 You</div>
-  {turn['q']}
-</div>""",
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        f"""
-<div class='bubble assistant'>
-  <div class='chip'>🤖 Medibot</div>
-  {turn['a']}
-</div>""",
-        unsafe_allow_html=True
-    )
-    if turn.get("refs"):
-        render_references(turn["refs"])
+    st.markdown(f"<div class='bubble user'><b>🧑 You</b><br>{turn['q']}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='bubble assistant'><b>🤖 Medibot</b><br>{turn['a']}</div>", unsafe_allow_html=True)
+    if turn.get("refs"): render_references(turn["refs"])
 
-if has_history:
-    st.markdown("</div>", unsafe_allow_html=True)
+if has_history: st.markdown("</div>", unsafe_allow_html=True)
 
 # ================== CHAT INPUT ==================
 prompt = st.chat_input("Type your question…")
-
 if prompt:
-    # User bubble immediately
-    st.markdown(
-        f"""
-<div class='bubble user'>
-  <div class='chip'>🧑 You</div>
-  {prompt}
-</div>""",
-        unsafe_allow_html=True
-    )
+    st.markdown(f"<div class='bubble user'><b>🧑 You</b><br>{prompt}</div>", unsafe_allow_html=True)
 
-    # Placeholder assistant bubble with typing dots (loader)
     typing_placeholder = st.empty()
     typing_placeholder.markdown(
-        """
-<div class='bubble assistant'>
-  <div class='chip'>🤖 Medibot</div>
-  <span class='typing'><span class='dot'></span><span class='dot'></span><span class='dot'></span></span>
-</div>
-""",
+        "<div class='bubble assistant'><b>🤖 Medibot</b><br>…thinking…</div>",
         unsafe_allow_html=True
     )
 
-    # Vector store and LLM
     vectorstore = get_vectorstore()
     if vectorstore is None:
         typing_placeholder.empty()
-        st.error("FAISS index not found at vectorstore/db_faiss. Build it with the same embedding model.")
+        st.error("FAISS index not found.")
         st.stop()
 
     groq_key = os.getenv("GROQ_API_KEY")
@@ -358,13 +212,11 @@ if prompt:
 
     llm = ChatGroq(model_name=GROQ_MODEL, temperature=0.0, groq_api_key=groq_key)
 
-    # MAIN QA (with spinner)
     try:
         with st.spinner("Medibot is thinking…"):
             docs = retriever.get_relevant_documents(prompt)
             if not docs:
-                answer = "I don't know based on the provided documents."
-                pages_by_source = {}
+                answer, pages_by_source = "I don't know based on the provided documents.", {}
             else:
                 context = "\n\n".join(doc.page_content for doc in docs)
                 custom = set_custom_prompt().format(context=context, question=prompt)
@@ -376,19 +228,11 @@ if prompt:
         st.error(f"Error: {e}")
         st.stop()
 
-    # Replace typing bubble with final assistant bubble
     typing_placeholder.markdown(
-        f"""
-<div class='bubble assistant'>
-  <div class='chip'>🤖 Medibot</div>
-  {answer}
-</div>""",
+        f"<div class='bubble assistant'><b>🤖 Medibot</b><br>{answer}</div>",
         unsafe_allow_html=True
     )
 
-    if pages_by_source:
-        _ = get_docs_base_url()
-        render_references(pages_by_source)
+    if pages_by_source: render_references(pages_by_source)
 
-    # Persist turn
     st.session_state.history.append({"q": prompt, "a": answer, "refs": pages_by_source or {}})
