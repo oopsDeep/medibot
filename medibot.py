@@ -104,50 +104,64 @@ def extract_pages_only(docs):
             by_source.setdefault(src, set()).add(label)
 
     def sort_key(x):
-        try: return int("".join(ch for ch in str(x) if ch.isdigit()))
-        except: return 10**9
+        try:
+            return int("".join(ch for ch in str(x) if ch.isdigit()))
+        except:
+            return 10**9
 
     return {k: sorted(v, key=sort_key) for k, v in by_source.items()}
 
-# -------- URL ONLY (normalize names to match) ----------
+# -------- Name normalization + URL lookup ----------
 def _normalize_name(s: str) -> str:
-    if not s: return ""
+    """Normalize a path or filename to a loose comparable key."""
+    if not s:
+        return ""
     s = unicodedata.normalize("NFKC", s)
-    s = Path(s.replace("\\", "/")).name
+    s = Path(s.replace("\\", "/")).name  # strip any directories
     s = s.lower()
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"[_\s]+", " ", s).strip()
     return s
 
-# Build lookup
+# Prepare a normalized lookup so any variant of the same filename matches
 _NORMALIZED_URLS = {}
 for k, v in MANUAL_URLS.items():
-    nk = _normalize_name(k)
-    _NORMALIZED_URLS[nk] = v
-    _NORMALIZED_URLS[_normalize_name(Path(k).stem)] = v
+    nk_full = _normalize_name(k)                 # with extension
+    nk_stem = _normalize_name(Path(k).stem)      # without extension
+    _NORMALIZED_URLS[nk_full] = v
+    _NORMALIZED_URLS[nk_stem] = v
 
 def to_clickable_url(src_path: str) -> str:
-    if not src_path: return ""
+    """Return external URL for a given local/absolute source path if mapped."""
+    if not src_path:
+        return ""
     base = Path(src_path).name
-    n_full = _normalize_name(base)
-    n_stem = _normalize_name(Path(base).stem)
-    return _NORMALIZED_URLS.get(n_full) or _NORMALIZED_URLS.get(n_stem) or ""
+    key_full = _normalize_name(base)
+    key_stem = _normalize_name(Path(base).stem)
+    return _NORMALIZED_URLS.get(key_full) or _NORMALIZED_URLS.get(key_stem) or ""
 
 def render_references(pages_by_source: dict):
-    if not pages_by_source: return
+    """
+    Renders references so the link title is ONLY the filename (no directories).
+    If the filename is present in MANUAL_URLS, it becomes a clickable link.
+    Otherwise it's shown as plain text (still clean).
+    """
+    if not pages_by_source:
+        return
     for src, pgs in pages_by_source.items():
-        base = Path(src).name if src else "unknown"
-        url = to_clickable_url(src) if src else ""
+        filename = Path(src).name if src else "unknown"
         numbers = ", ".join(pgs)
+        url = to_clickable_url(src) if src else ""
 
         if url:
             st.markdown(
-                f"[**{base}**]({url})  \n<span class='ref-line'>Page numbers: {numbers}</span>",
+                f"[**{html.escape(filename)}**]({url})  \n"
+                f"<span class='ref-line'>Page numbers: {html.escape(numbers)}</span>",
                 unsafe_allow_html=True
             )
         else:
             st.markdown(
-                f"<strong>{html.escape(base)}</strong><br>"
+                f"<strong>{html.escape(filename)}</strong><br>"
                 f"<span class='ref-line'>Page numbers: {html.escape(numbers)}</span>",
                 unsafe_allow_html=True
             )
@@ -173,14 +187,17 @@ if "history" not in st.session_state:
     st.session_state.history = []
 
 has_history = len(st.session_state.history) > 0
-if has_history: st.markdown("<div class='card stream'>", unsafe_allow_html=True)
+if has_history:
+    st.markdown("<div class='card stream'>", unsafe_allow_html=True)
 
 for turn in st.session_state.history:
     st.markdown(f"<div class='bubble user'><b>🧑 You</b><br>{turn['q']}</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='bubble assistant'><b>🤖 Medibot</b><br>{turn['a']}</div>", unsafe_allow_html=True)
-    if turn.get("refs"): render_references(turn["refs"])
+    if turn.get("refs"):
+        render_references(turn["refs"])
 
-if has_history: st.markdown("</div>", unsafe_allow_html=True)
+if has_history:
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ================== CHAT INPUT ==================
 prompt = st.chat_input("Type your question…")
@@ -233,6 +250,7 @@ if prompt:
         unsafe_allow_html=True
     )
 
-    if pages_by_source: render_references(pages_by_source)
+    if pages_by_source:
+        render_references(pages_by_source)
 
     st.session_state.history.append({"q": prompt, "a": answer, "refs": pages_by_source or {}})
